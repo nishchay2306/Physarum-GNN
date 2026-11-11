@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.deps/
+.tmp/
+.venv/
+.wheels/
+data/part_*.bin
+PHYSRUM_GNN_*.zip
