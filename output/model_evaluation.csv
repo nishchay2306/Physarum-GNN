@@ -1,0 +1,4 @@
+scenario,held_out_bypass_edges,gnn_recall_at_top_5pct
+maligaon,33,0.0
+jorabat,223,0.175
+panikhaiti,54,0.0
