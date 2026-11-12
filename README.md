@@ -42,13 +42,17 @@ The route choices depend on the map. In the default trip, closing each original 
 
 ## Quick start
 
-Install **Python 3.10 or newer**, then open a terminal in this project folder and run:
+Open the [browser demo](https://nishchay2306.github.io/Physarum-GNN/) to try the fleet comparison without installing Python. The simulation runs on your device. It uses bundled map data and simulated disruptions, so it does not need a live traffic service.
+
+To run the Python version locally, install **Python 3.10 or newer**, then open a terminal in this project folder and run:
 
 ```bash
 python app.py
 ```
 
 The app prints a local address and opens the dashboard in your browser. Keep the terminal open while using it. Press `Ctrl+C` to stop. The demo works without an internet connection.
+
+The hosted version runs the same fleet rules in a browser worker. Its routing computation time reflects your browser and device, so compare those times only within the same run. The Python version also includes the separate road-closure experiment below.
 
 To run the separate command-line road-closure experiment:
 
@@ -215,9 +219,12 @@ python scripts/build_tiles.py
 python main.py --train                      # retrain the GNN
 python -m unittest discover -s tests -v     # run tests
 python -m pip install numpy                 # optional: vectorized conductivity updates
+python -m scripts.build_pages_data          # refresh the bundled browser map and model
 ```
 
-The project uses the **Python standard library only**; NumPy is an optional accelerator. The original single-vehicle dynamic experiment is kept in `physrum/dynamic.py` for reference.
+GitHub Pages serves the static files in `docs/`. To preview that version locally, run `python -m http.server 8000 --directory docs` and open `http://localhost:8000/`. The browser simulation uses JavaScript and a Web Worker; it does not call the Python server. If you change `fleet.html`, carry the corresponding interface change into `docs/index.html`.
+
+The Python project uses the **standard library only**; NumPy is an optional accelerator. The original single-vehicle dynamic experiment is kept in `physrum/dynamic.py` for reference.
 
 ## Credits
 
