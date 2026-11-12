@@ -1,54 +1,56 @@
-# Physarum-GNN: Offline Guwahati Fleet Routing Simulation
+# Physarum-GNN: Guwahati Relief Fleet Simulation
 
-An offline experiment that compares two routing policies, classic **Dijkstra** and a **Physarum-inspired GNN** policy, on a simulated fleet operating over an OSM-derived road network of Guwahati, India. Both policies face identical vehicles, road speeds, capacities, congestion math, and hazard events, so the comparison is like for like. Purple dashed connectors are synthetic simulation roads, never verified real streets.
+What happens when a road closes while relief vehicles are on their way? This offline demo lets you watch two route-planning methods respond on a simplified map of Guwahati. You choose a starting point, a destination, and the number of vehicles. Both fleets then face the same simulated traffic and road closures.
 
-> **Observed results:** on the denser map, neither routing policy wins every measure. The 50-vehicle run finished at tick 187 for Physarum and tick 191 for Dijkstra, but Dijkstra used much less routing CPU. At 1,000 vehicles, Physarum finished its last delivery sooner yet incurred more aggregate BPR drive delay. These are simulated outcomes, not a general superiority claim.
+- **Dijkstra** chooses the shortest available route and finds a new one when a closure blocks it.
+- **Physarum-GNN** adjusts its route choices as simulated traffic changes. It combines a small graph neural network (GNN) with a routing method inspired by how slime mold forms networks.
+
+In the measured runs, **neither method wins every measure**. Physarum-GNN delivered the last vehicle sooner in the 50- and 1,000-vehicle examples, while Dijkstra used much less computation. At 1,000 vehicles, Dijkstra also had less added driving time from congestion. These results describe this simulation, not real emergency travel.
+
+## See the demo
+
+![Fleet dashboard showing selectable intersections on the Guwahati map and purple dashed simulated links](docs/images/fleet-map.png)
+
+Choose a start and destination, set the fleet size, and press **Dispatch both fleets**. Purple dashed links represent simulated connections added for this experiment.
+
+![Example run comparing 417 Physarum-GNN vehicles with 417 Dijkstra vehicles, including route maps and delivery statistics](docs/images/fleet-comparison.png)
+
+The report cards show where each fleet went and how many vehicles arrived. This screenshot is a **417-vehicle example run**. The tables below use separate, repeatable 50- and 1,000-vehicle runs.
+
+![Delivery timeline for a 417-vehicle example run, with Physarum-GNN and Dijkstra cumulative arrival lines](docs/images/delivery-timeline.png)
+
+Each line rises as vehicles reach their destinations. A higher line at the same point on the horizontal axis means more vehicles have arrived by that simulation step. The dashed vertical lines mark the middle arrival time for each fleet.
 
 ---
 
 ## Results at a glance
 
-### Fleet dashboard (seed 2306; no visual tick delay)
+### Fleet dashboard (repeatable runs with no display delay)
 
-| Vehicles per policy | Policy | Delivered | Median arrival tick | Last arrival tick | Fleet BPR delay |
+| Vehicles per fleet | Route planner | Delivered | Middle arrival step | Final arrival step | Extra driving time from congestion |
 | ---: | --- | ---: | ---: | ---: | ---: |
 | 50 | Dijkstra | 50 / 50 | 122.5 | 191 | 62.2 min |
 | 50 | Physarum-GNN | 50 / 50 | **114.5** | **187** | **34.1 min** |
 | 1,000 | Dijkstra | 1,000 / 1,000 | 511 | 847 | **1,205.8 min** |
 | 1,000 | Physarum-GNN | 1,000 / 1,000 | **473.5** | **808** | 3,361.9 min |
 
-Median arrival tick and last-car tick are shown when all vehicles in the corresponding fleet have arrived. Median arrival is the middle per-vehicle arrival time on the simulation clock; for even fleet sizes, it averages the two middle arrival ticks. The live graph plots cumulative vehicles arrived against those same ticks for both policies. Ticks are simulated steps, not minutes or wall-clock seconds. BPR delay is summed across all vehicles and excludes intersection queue ticks. Wall time and routing CPU depend on the computer; a 1,000-vehicle run may take minutes. In this default A-to-B route, blocking each original route segment in turn yields 24 detours, 12 within 25% of the original drive time; without simulated joins, it yields 3 detours and none within 25%.
+**How to read the table:** a *step*, called a *tick* in the dashboard, is not a real second or minute. *Middle arrival* is when the middle vehicle arrived. *Final arrival* is when every vehicle had arrived. *Extra driving time* adds up the estimated minutes caused by simulated congestion across all vehicles. The dashboard calls this **fleet BPR delay**. It does not include time spent waiting to enter a full road. Measured computation time varies by computer, and a 1,000-vehicle run may take minutes to finish.
 
-### Single-vehicle CLI benchmark (Maligaon–Kamakhya route, simulated blockade `14255`)
-
-| Method | Valid after closure | Estimated drive | Rerouting latency |
-| --- | --- | ---: | ---: |
-| Fixed pre-disaster route | No | unavailable | 0 ms |
-| Dijkstra rerun | Yes | 5.310 min | 1.072 ms |
-| Physarum | Yes | 5.310 min | 5,467.157 ms |
-| Physarum-GNN | Yes | 5.310 min | 5,649.875 ms |
-
-**How to read these numbers**
-
-- Every method that can reroute finds the same 5.310-minute detour. Dijkstra gets there thousands of times faster.
-- The GNN did not improve route validity or drive time.
-- The results do not support a claim that conventional shortest-path rerouting is static or inferior.
-- Timings come from one run and vary by machine. The default seeded run is reproducible, but measured CPU time is not.
-- The short purple links are simulated for this graph experiment; they are not verified travel corridors.
+The route choices depend on the map. In the default trip, closing each original route segment in turn produces 24 possible detours, 12 within 25% of the original estimated drive time. Without the simulated links, only three detours remain, and none is within 25%.
 
 ---
 
 ## Quick start
 
-Requires **Python 3.10+**. No internet connection is needed.
+Install **Python 3.10 or newer**, then open a terminal in this project folder and run:
 
 ```bash
 python app.py
 ```
 
-The app prints a fresh local address in the terminal. Open it in your browser and keep the terminal running. Press `Ctrl+C` to stop.
+The app prints a local address and opens the dashboard in your browser. Keep the terminal open while using it. Press `Ctrl+C` to stop. The demo works without an internet connection.
 
-Optional: run the CLI benchmark instead.
+To run the separate command-line road-closure experiment:
 
 ```bash
 python main.py
@@ -120,9 +122,18 @@ Implementation notes:
 
 ---
 
-## CLI benchmark
+## Separate road-closure experiment
 
 `python main.py` blocks a simulated road on the original Maligaon–Kamakhya route and runs Dijkstra, warm-start Physarum, and Physarum-GNN on that same closure. It also runs the Jorabat and Panikhaiti scenarios.
+
+In one measured run with road segment `14255` closed, every method that could find a new route returned the same estimated 5.310-minute detour. Dijkstra computed it much faster. The GNN did not improve route validity or estimated drive time in this test. These timings vary by computer.
+
+| Method | Valid after closure | Estimated drive | Rerouting latency |
+| --- | --- | ---: | ---: |
+| Fixed route chosen before closure | No | unavailable | 0 ms |
+| Dijkstra rerun | Yes | 5.310 min | 1.072 ms |
+| Physarum | Yes | 5.310 min | 5,467.157 ms |
+| Physarum-GNN | Yes | 5.310 min | 5,649.875 ms |
 
 ### Outputs (in `output/`)
 
