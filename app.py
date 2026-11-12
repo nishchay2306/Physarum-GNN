@@ -14,6 +14,7 @@ ROOT=Path(__file__).resolve().parent
 HTML=(ROOT/'fleet.html').read_bytes()
 SESSIONS={}
 BACKGROUND=RoadGraph(bounds=DISPLAY_BOUNDS)
+BACKGROUND.edges.extend(edge for edge in GRAPH.edges if edge.get('simulated'))
 
 class Handler(BaseHTTPRequestHandler):
     def respond(self,value,status=200):

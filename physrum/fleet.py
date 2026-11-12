@@ -3,6 +3,7 @@ import copy
 import math
 import queue
 import random
+import statistics
 import threading
 import time
 
@@ -29,10 +30,15 @@ DEPOTS = (DEFAULT_START, nearby(DEFAULT_START, DEFAULT_END, DEFAULT_END))
 ZONES = (DEFAULT_END, nearby(DEFAULT_END, DEFAULT_START, DEFAULT_END))
 
 
+def bpr_multiplier(flow, capacity):
+    """Same simulated traffic time multiplier for both routing policies."""
+    return 1 + .30 * (flow / capacity) ** 4
+
+
 class Fleet:
     def __init__(self, count=50, start=DEFAULT_START, target=DEFAULT_END,
                  seed=2306, tick_seconds=.02, max_ticks=1000):
-        if not 1 <= count <= 120: raise ValueError('Fleet size must be between 1 and 120.')
+        if not 1 <= count <= 1000: raise ValueError('Fleet size must be between 1 and 1000.')
         if start not in GRAPH.nodes or target not in GRAPH.nodes or start == target:
             raise ValueError('Select different connected road intersections for start and destination.')
         if not GRAPH.dijkstra(start, target):
@@ -53,15 +59,18 @@ class Fleet:
         self.closed_until = {}
         self.initial = []
         self.trucks = {}
+        initial_routes = {(source, destination): GRAPH.dijkstra(source, destination)
+                          for source in self.depots for destination in self.zones}
         for method in ('dijkstra', 'physarum'):
             team = []
             for i in range(count):
                 source, target = self.depots[i % 2], self.zones[(i // 2) % 2]
-                route = GRAPH.dijkstra(source, target)
+                route = initial_routes[(source, target)]
                 if not route: raise ValueError('The bundled road extract cannot connect fleet depots and zones.')
                 if method == 'dijkstra': self.initial.append(route)
                 team.append({'node': source, 'target': target, 'plan': route,
                              'edge': None, 'remaining': 0, 'wait': 0, 'arrived': False,
+                             'arrival_tick': None,
                              'traversed': []})
             self.trucks[method] = team
         # Incident locations are fixed before either policy starts moving;
@@ -101,9 +110,12 @@ class Fleet:
         producer = threading.Thread(target=self.disasters, daemon=True)
         producer.start()
         stats = {m:{'compute_ms':0.,'recalculations':0,'route_updates':0,
-                     'congestion_wait_ticks':0,'travel_min':0.,'delivered':0,
+                     'congestion_wait_ticks':0,'travel_min':0.,
+                     'congestion_extra_min':0.,'delivered':0,
                      'completed_tick':None,'penalties_ms':[]} for m in self.trucks}
         used_edges = {m:set() for m in self.trucks}
+        arrival_ticks = {m:[] for m in self.trucks}
+        arrival_series = {m:[[0, 0]] for m in self.trucks}
         cond = list(self.seeds)
         events, wall_start = [], time.perf_counter()
         try:
@@ -127,6 +139,7 @@ class Fleet:
                         break
                 blocked=frozenset(self.closed_until)
                 occupancy={m:{eid:0 for eid in self.edge_ids} for m in self.trucks}
+                route_cache = {}
                 for method,team in self.trucks.items():
                     for truck in team:
                         if truck['edge'] is not None: occupancy[method][truck['edge']]+=1
@@ -153,6 +166,8 @@ class Fleet:
                             truck['edge']=None
                             if truck['node']==truck['target']:
                                 truck['arrived']=True;stats[method]['delivered']+=1
+                                truck['arrival_tick']=tick
+                                arrival_ticks[method].append(tick)
                                 if stats[method]['delivered']==self.count:stats[method]['completed_tick']=tick
                                 continue
                         if method=='dijkstra':
@@ -167,12 +182,20 @@ class Fleet:
                             t=time.perf_counter_ns()
                             # One-hop GNN seed + persistent capacity-aware C_ij.
                             # Route extraction still uses a shortest-path search.
-                            costs={eid: GRAPH.minutes(eid)/(.25+.75*cond[self.edge_idx[eid]])*
-                                   (1+.55*(occupancy[method][eid]/self.capacity[eid])**4)
-                                   for eid in self.edge_ids}
-                            truck['plan']=GRAPH.dijkstra(truck['node'],truck['target'],blocked,costs)
-                            stats[method]['compute_ms']+=(time.perf_counter_ns()-t)/1e6
-                            stats[method]['route_updates']+=1
+                            # Reuse the same route for trucks at the same
+                            # intersection while its outgoing load is unchanged.
+                            # A departure changes that load, prompting a new
+                            # capacity-aware route on the next decision.
+                            nearby_load=tuple(occupancy[method][e] for _,e in GRAPH.adj[truck['node']])
+                            cache_key=(truck['node'],truck['target'],nearby_load)
+                            if cache_key not in route_cache:
+                                costs={eid: GRAPH.minutes(eid)/(.25+.75*cond[self.edge_idx[eid]])*
+                                       (1+.55*(occupancy[method][eid]/self.capacity[eid])**4)
+                                       for eid in self.edge_ids}
+                                route_cache[cache_key]=GRAPH.dijkstra(truck['node'],truck['target'],blocked,costs)
+                                stats[method]['compute_ms']+=(time.perf_counter_ns()-t)/1e6
+                                stats[method]['route_updates']+=1
+                            truck['plan']=route_cache[cache_key]
                         if not truck['plan']:continue
                         eid=truck['plan'][0]
                         if eid in blocked:continue
@@ -186,15 +209,17 @@ class Fleet:
                             stats[method]['congestion_wait_ticks']+=1
                             continue
                         occupancy[method][eid]+=1
-                        ratio=occupancy[method][eid]/self.capacity[eid]
                         free=GRAPH.minutes(eid)
-                        delay=1+.15*ratio**4
+                        delay=bpr_multiplier(occupancy[method][eid], self.capacity[eid])
                         truck['remaining']=max(1,math.ceil(delay))
                         truck['edge']=eid
                         used_edges[method].add(eid)
                         truck['plan']=truck['plan'][1:]
                         stats[method]['travel_min']+=free*delay
+                        stats[method]['congestion_extra_min']+=free*(delay-1)
                         stats[method]['congestion_wait_ticks']+=truck['remaining']-1
+                for method in self.trucks:
+                    arrival_series[method].append([tick, stats[method]['delivered']])
                 with self.lock:
                     self.snapshot={'tick':tick,'done':False,'events':events[:],
                         'blocked':sorted(blocked),'depot_nodes':self.depots,'zone_nodes':self.zones,
@@ -202,10 +227,14 @@ class Fleet:
                         'density':{m:{str(i):n for i,n in loads.items() if n>0} for m,loads in occupancy.items()},
                         'fleets':{m:{'trucks':[{'node':t['node'],'edge':t['edge'],
                             'remaining':t['remaining'],'target':t['target'],
+                            'arrival_tick':t['arrival_tick'],
                             'traversed':t['traversed'], 'route':(t['plan'] or [])[:18]}
-                            for t in team], 'metrics':{**stats[m],
+                            for t in team], 'arrival_series':arrival_series[m][:],
+                            'metrics':{**stats[m],
                                 'unique_roads_used':len(used_edges[m]),
                                 'compute_ms':round(stats[m]['compute_ms'],3),
+                                'median_arrival_tick':statistics.median(arrival_ticks[m]) if len(arrival_ticks[m]) == self.count else None,
+                                'congestion_extra_min':round(stats[m]['congestion_extra_min'],3),
                                 'travel_min':round(stats[m]['travel_min'],3)}}
                             for m,team in self.trucks.items()},
                         'elapsed_wall_s':round(time.perf_counter()-wall_start,3)}

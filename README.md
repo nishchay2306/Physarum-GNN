@@ -1,19 +1,23 @@
 # Physarum-GNN: Offline Guwahati Fleet Routing Simulation
 
-An offline experiment that compares two routing policies, classic **Dijkstra** and a **Physarum-inspired GNN** policy, on a simulated fleet operating over an OSM-derived road network of Guwahati, India. Both policies face identical vehicles, road speeds, capacities, congestion math, and hazard events, so the comparison is like for like.
+An offline experiment that compares two routing policies, classic **Dijkstra** and a **Physarum-inspired GNN** policy, on a simulated fleet operating over an OSM-derived road network of Guwahati, India. Both policies face identical vehicles, road speeds, capacities, congestion math, and hazard events, so the comparison is like for like. Purple dashed connectors are synthetic simulation roads, never verified real streets.
 
-> **Honest headline:** on this small, sparsely connected road extract, Dijkstra won. It finished sooner and used far less routing computation. The project reports that negative result as is; the dashboard does not present Physarum as the winner.
+> **Observed results:** on the denser map, neither routing policy wins every measure. The 50-vehicle run finished at tick 187 for Physarum and tick 191 for Dijkstra, but Dijkstra used much less routing CPU. At 1,000 vehicles, Physarum finished its last delivery sooner yet incurred more aggregate BPR drive delay. These are simulated outcomes, not a general superiority claim.
 
 ---
 
 ## Results at a glance
 
-### Fleet dashboard (default seeded run: 50 trucks per fleet, standard-library mode)
+### Fleet dashboard (seed 2306; no visual tick delay)
 
-| Policy | Trucks delivered | Last arrival tick | Routing CPU |
-| --- | ---: | ---: | ---: |
-| Dijkstra | 50 / 50 | **157** | **~14 ms** |
-| Physarum-GNN | 50 / 50 | 189 | ~1,190 ms |
+| Vehicles per policy | Policy | Delivered | Median arrival tick | Last arrival tick | Fleet BPR delay |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 50 | Dijkstra | 50 / 50 | 122.5 | 191 | 62.2 min |
+| 50 | Physarum-GNN | 50 / 50 | **114.5** | **187** | **34.1 min** |
+| 1,000 | Dijkstra | 1,000 / 1,000 | 511 | 847 | **1,205.8 min** |
+| 1,000 | Physarum-GNN | 1,000 / 1,000 | **473.5** | **808** | 3,361.9 min |
+
+Median arrival tick and last-car tick are shown when all vehicles in the corresponding fleet have arrived. Median arrival is the middle per-vehicle arrival time on the simulation clock; for even fleet sizes, it averages the two middle arrival ticks. The live graph plots cumulative vehicles arrived against those same ticks for both policies. Ticks are simulated steps, not minutes or wall-clock seconds. BPR delay is summed across all vehicles and excludes intersection queue ticks. Wall time and routing CPU depend on the computer; a 1,000-vehicle run may take minutes. In this default A-to-B route, blocking each original route segment in turn yields 24 detours, 12 within 25% of the original drive time; without simulated joins, it yields 3 detours and none within 25%.
 
 ### Single-vehicle CLI benchmark (Maligaon–Kamakhya route, simulated blockade `14255`)
 
@@ -30,7 +34,7 @@ An offline experiment that compares two routing policies, classic **Dijkstra** a
 - The GNN did not improve route validity or drive time.
 - The results do not support a claim that conventional shortest-path rerouting is static or inferior.
 - Timings come from one run and vary by machine. The default seeded run is reproducible, but measured CPU time is not.
-- Testing fleet splitting across the named Guwahati corridors would need broader, better-connected arterial map data than this extract provides.
+- The short purple links are simulated for this graph experiment; they are not verified travel corridors.
 
 ---
 
@@ -56,25 +60,26 @@ python main.py
 
 ### The map
 
-The main map is a **1.5× wider OSM-derived Guwahati close-up** with 722 road nodes and 694 street segments. Its routable area, the connected component, has 495 nodes and 503 segments, and only these are selectable.
+The main map is a **1.5× wider OSM-derived Guwahati close-up** with 722 mapped nodes and 834 visible links. It includes 694 bundled OSM segments and 140 short, simulated joins, marked purple and dashed. The connected routable area has 495 selectable intersections and 643 links. The joins add alternative paths for the simulation; they are not verified roads.
 
 ### Running a comparison
 
 1. **Pick a start and destination** by clicking intersections on the map or by using the two node menus. These are the actual first depot and disaster zone.
-2. **Set the fleet size.** The default is **50 vehicles per fleet**. Enter a whole number from 1 to 120 in the number box, or use the synchronized slider.
+2. **Set the fleet size.** The default is **50 vehicles per fleet**. Enter a whole number from 1 to 1000 in the number box, or use the synchronized slider.
 3. Press **Dispatch both fleets**.
 
 The simulator derives a second reachable depot and zone nearby so the fleets have more than one depot-zone pair. Each policy gets the same number of vehicles, the same selected depot-zone pairs, and the same road speeds, capacities, and hazard events.
 
-While the simulation runs you can watch live traffic, road closures, vehicle locations, and delivery counts, plus a separate route map and report card for each policy. Larger fleets take longer to finish and may hit the configured tick cap.
+While the simulation runs you can watch live traffic, road closures, vehicle locations, and delivery counts, plus a separate route map and report card for each policy. The graph below compares their cumulative arrivals at each simulation tick; the colored dashed lines mark each median arrival tick. Median arrival tick and last-car tick appear only when every vehicle in that fleet has arrived; if the tick cap ends first, final times are unavailable and the live arrival curve still shows progress. Larger fleets take longer to finish and may hit the configured tick cap.
 
 ### Report cards
 
 Each policy's card shows:
 
 - Fleet deliveries and the last arrival tick
+- BPR added drive time in minutes, shown separately from aggregate congestion wait ticks
 - Aggregate congestion wait ticks
-- Summed estimated moving minutes
+- Median arrival tick and last-car tick, shown once every vehicle has arrived
 - Measured routing CPU milliseconds
 - Route update and recalculation counts
 - Roads used
@@ -92,10 +97,10 @@ Moving time and queued or waiting ticks are separate metrics. A simulation tick 
 - **Road closures.** Both policies see the same temporary closures each tick. A concurrent producer thread proposes seeded micro-disruptions from a pre-event corridor, independently of either policy's current route. A lock and condition coordinate it with the master tick loop.
 - **Closure rules.** Closures last eight ticks and are accepted only where depot-zone pairs still have a bypass.
 - **Capacity.** Each road has a class-based capacity, and at most twice that number of vehicles may occupy it. Extra vehicles wait at the preceding intersection.
-- **Congestion model.** For each admitted vehicle, travel duration follows the BPR formula below. The resulting simulated delay is rounded up to ticks. Both policies use identical congestion math.
+- **Congestion model.** For each admitted vehicle, travel duration follows the BPR formula below. The resulting simulated delay is rounded up to ticks. Both policies use identical congestion math. The backend retains the sum of free-flow and BPR road time across vehicles; the dashboard shows median arrival tick and the fleet-wide BPR penalty instead of that confusing aggregate drive-time sum. Vehicles also queue at full roads, and queue time is reported as wait ticks rather than conflated with drive minutes.
 
 ```text
-travel time = free-flow time × (1 + 0.15 × (occupancy / capacity)^4)
+travel time = free-flow time × (1 + 0.30 × (occupancy / capacity)^4)
 ```
 
 ### The two routing policies
