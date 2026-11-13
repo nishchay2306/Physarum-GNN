@@ -19,8 +19,8 @@ def local_graph():
     xs = [p[0] for p in original.nodes.values()]
     ys = [p[1] for p in original.nodes.values()]
     cx, cy = (min(xs)+max(xs))/2, (min(ys)+max(ys))/2
-    bounds = (cx-.75*(max(xs)-min(xs)), cy-.75*(max(ys)-min(ys)),
-              cx+.75*(max(xs)-min(xs)), cy+.75*(max(ys)-min(ys)))
+    bounds = (cx-.825*(max(xs)-min(xs)), cy-.825*(max(ys)-min(ys)),
+              cx+.825*(max(xs)-min(xs)), cy+.825*(max(ys)-min(ys)))
     wider = connected_component(RoadGraph(bounds=bounds), source)
     add_simulated_connectors(wider)
     return wider, source, target, bounds

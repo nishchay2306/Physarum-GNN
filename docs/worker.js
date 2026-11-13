@@ -28,12 +28,13 @@ self.onmessage = async event => {
     if (type === "start") {
       const data = await loadData();
       const next = new PhysrumSimulator.Fleet(data, {
-        count: Number(body.count), start: body.start, target: body.target, seed: Number(body.seed)
+        count: Number(body.count), start: body.start, target: body.target,
+        pairs: body.pairs ?? null, seed: Number(body.seed)
       });
       fleet = next;
       const id = ++sessionId;
       self.postMessage({ requestId, value: {
-        session: String(id), initial: next.initial, depots: next.depots, zones: next.zones
+        session: String(id), initial: next.initial, depots: next.depots, zones: next.zones, pairs: next.pairs
       } });
       setTimeout(() => runTick(id), 20);
     } else if (type === "state") {

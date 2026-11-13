@@ -28,6 +28,34 @@ def nearby(anchor, avoid, destination):
 
 DEPOTS = (DEFAULT_START, nearby(DEFAULT_START, DEFAULT_END, DEFAULT_END))
 ZONES = (DEFAULT_END, nearby(DEFAULT_END, DEFAULT_START, DEFAULT_END))
+MAX_PAIRS = 10
+
+
+def default_pairs(limit=MAX_PAIRS):
+    """Deterministic, reachable, well-spread start/end pairs for the page's defaults.
+
+    Pair 1 is the original default route; the rest are seeded picks of moderate
+    length whose endpoints keep clear of every endpoint already chosen, so the
+    map pins do not pile on top of each other.
+    """
+    pairs = [(DEFAULT_START, DEFAULT_END)]
+    rng = random.Random(7)
+    ids = sorted(GRAPH.nodes)
+    used = [DEFAULT_START, DEFAULT_END]
+
+    def clear(n, extra=()):
+        x, y = GRAPH.nodes[n]
+        return all(math.hypot((x-GRAPH.nodes[u][0])*.9, y-GRAPH.nodes[u][1]) > .002
+                   for u in used + list(extra))
+
+    for _ in range(6000):
+        if len(pairs) >= limit: break
+        a, b = rng.choice(ids), rng.choice(ids)
+        if a == b or not clear(a) or not clear(b, (a,)): continue
+        route = GRAPH.dijkstra(a, b)
+        if route and 10 <= len(route) <= 40:
+            pairs.append((a, b)); used += [a, b]
+    return pairs[:limit]
 
 
 def bpr_multiplier(flow, capacity):
@@ -37,21 +65,46 @@ def bpr_multiplier(flow, capacity):
 
 class Fleet:
     def __init__(self, count=50, start=DEFAULT_START, target=DEFAULT_END,
-                 seed=2306, tick_seconds=.02, max_ticks=1000):
-        if not 1 <= count <= 1000: raise ValueError('Fleet size must be between 1 and 1000.')
-        if start not in GRAPH.nodes or target not in GRAPH.nodes or start == target:
-            raise ValueError('Select different connected road intersections for start and destination.')
-        if not GRAPH.dijkstra(start, target):
-            raise ValueError('No directed route connects the selected intersections.')
-        second_start = nearby(start, target, target)
-        x,y = GRAPH.nodes[target]
-        choices = sorted(GRAPH.nodes, key=lambda n:(GRAPH.nodes[n][0]-x)**2+(GRAPH.nodes[n][1]-y)**2)
-        second_target = next((n for n in choices if n not in (target,start,second_start)
-                              and GRAPH.dijkstra(start,n) and GRAPH.dijkstra(second_start,n)), None)
-        if second_target is None: raise ValueError('No second reachable destination near the selected point.')
-        self.depots, self.zones = (start,second_start),(target,second_target)
+                 seed=2306, tick_seconds=.02, max_ticks=None, pairs=None):
+        if not 1 <= count <= 2500: raise ValueError('Fleet size must be between 1 and 2500.')
+        if pairs is None:
+            # Legacy mode: one selected start/end; a second depot and zone are
+            # derived nearby and vehicles cycle through all four combinations.
+            if start not in GRAPH.nodes or target not in GRAPH.nodes or start == target:
+                raise ValueError('Select different connected road intersections for start and destination.')
+            if not GRAPH.dijkstra(start, target):
+                raise ValueError('No directed route connects the selected intersections.')
+            second_start = nearby(start, target, target)
+            x,y = GRAPH.nodes[target]
+            choices = sorted(GRAPH.nodes, key=lambda n:(GRAPH.nodes[n][0]-x)**2+(GRAPH.nodes[n][1]-y)**2)
+            second_target = next((n for n in choices if n not in (target,start,second_start)
+                                  and GRAPH.dijkstra(start,n) and GRAPH.dijkstra(second_start,n)), None)
+            if second_target is None: raise ValueError('No second reachable destination near the selected point.')
+            self.depots, self.zones = (start,second_start),(target,second_target)
+            self.pairs = [(self.depots[0],self.zones[0]),(self.depots[1],self.zones[0]),
+                          (self.depots[0],self.zones[1]),(self.depots[1],self.zones[1])]
+        else:
+            # Explicit mode: N independent start/end paths chosen by the user.
+            try: pairs = [(str(a), str(b)) for a, b in pairs]
+            except (TypeError, ValueError):
+                raise ValueError('Each path needs one start and one end intersection.')
+            if not 1 <= len(pairs) <= MAX_PAIRS:
+                raise ValueError(f'Choose between 1 and {MAX_PAIRS} start/end paths.')
+            if count < len(pairs):
+                raise ValueError(f'Fleet size ({count}) must be at least the number of paths ({len(pairs)}).')
+            for n, (a, b) in enumerate(pairs, 1):
+                if a not in GRAPH.nodes or b not in GRAPH.nodes or a == b:
+                    raise ValueError(f'Path {n}: select two different road intersections.')
+                if not GRAPH.dijkstra(a, b):
+                    raise ValueError(f'Path {n}: no directed route connects the selected intersections.')
+            self.pairs = pairs
+            self.depots = tuple(a for a, _ in pairs)
+            self.zones = tuple(b for _, b in pairs)
         self.count, self.seed = count, seed
-        self.tick_seconds, self.max_ticks = tick_seconds, max_ticks
+        # Allow large fleets time to clear capacity-limited roads. An explicit
+        # max_ticks argument still overrides the default for tests and demos.
+        self.tick_seconds = tick_seconds
+        self.max_ticks = max_ticks if max_ticks is not None else max(1000, math.ceil(count*1.3))
         self.lock, self.condition = threading.Lock(), threading.Condition()
         self.proposals = queue.Queue()
         self.request_tick = self.done_tick = 0
@@ -59,16 +112,16 @@ class Fleet:
         self.closed_until = {}
         self.initial = []
         self.trucks = {}
-        initial_routes = {(source, destination): GRAPH.dijkstra(source, destination)
-                          for source in self.depots for destination in self.zones}
+        initial_routes = {pair: GRAPH.dijkstra(*pair) for pair in self.pairs}
         for method in ('dijkstra', 'physarum'):
             team = []
             for i in range(count):
-                source, target = self.depots[i % 2], self.zones[(i // 2) % 2]
+                pair_index = i % len(self.pairs)
+                source, target = self.pairs[pair_index]
                 route = initial_routes[(source, target)]
                 if not route: raise ValueError('The bundled road extract cannot connect fleet depots and zones.')
                 if method == 'dijkstra': self.initial.append(route)
-                team.append({'node': source, 'target': target, 'plan': route,
+                team.append({'node': source, 'target': target, 'pair': pair_index, 'plan': route,
                              'edge': None, 'remaining': 0, 'wait': 0, 'arrived': False,
                              'arrival_tick': None,
                              'traversed': []})
@@ -85,6 +138,7 @@ class Fleet:
                          for e in GRAPH.edges}
         self.snapshot = {'tick':0,'done':False,'events':[],'blocked':[],
                          'fleets':{},'density':{},'depot_nodes':self.depots,'zone_nodes':self.zones,
+                         'pairs':[list(p) for p in self.pairs],
                          'numpy_acceleration':np is not None}
 
     def disasters(self):
@@ -116,6 +170,10 @@ class Fleet:
         used_edges = {m:set() for m in self.trucks}
         arrival_ticks = {m:[] for m in self.trucks}
         arrival_series = {m:[[0, 0]] for m in self.trucks}
+        npairs = len(self.pairs)
+        pair_total = [sum(1 for i in range(self.count) if i % npairs == k) for k in range(npairs)]
+        pstats = {m:[{'delivered':0,'wait':0,'extra':0.,'travel':0.,'completed':None,
+                      'arrivals':[],'series':[[0,0]]} for _ in range(npairs)] for m in self.trucks}
         cond = list(self.seeds)
         events, wall_start = [], time.perf_counter()
         try:
@@ -131,8 +189,8 @@ class Fleet:
                 for eid in proposed:
                     if eid in self.closed_until: continue
                     candidate=set(self.closed_until)|{eid}
-                    # Keep at least one route for each depot-zone pair.
-                    if all(GRAPH.dijkstra(s,t,candidate) for s in self.depots for t in self.zones):
+                    # Keep at least one route for each selected start/end path.
+                    if all(GRAPH.dijkstra(s,t,candidate) for s,t in self.pairs):
                         self.closed_until[eid]=tick+8
                         events.append({'tick':tick,'edge':eid,'until':tick+8,
                                        'kind':'simulated micro-disruption'})
@@ -168,6 +226,9 @@ class Fleet:
                                 truck['arrived']=True;stats[method]['delivered']+=1
                                 truck['arrival_tick']=tick
                                 arrival_ticks[method].append(tick)
+                                ps=pstats[method][truck['pair']]
+                                ps['delivered']+=1;ps['arrivals'].append(tick)
+                                if ps['delivered']==pair_total[truck['pair']]:ps['completed']=tick
                                 if stats[method]['delivered']==self.count:stats[method]['completed_tick']=tick
                                 continue
                         if method=='dijkstra':
@@ -207,6 +268,7 @@ class Fleet:
                         if occupancy[method][eid] >= 2*self.capacity[eid]:
                             truck['wait']+=1
                             stats[method]['congestion_wait_ticks']+=1
+                            pstats[method][truck['pair']]['wait']+=1
                             continue
                         occupancy[method][eid]+=1
                         free=GRAPH.minutes(eid)
@@ -218,18 +280,33 @@ class Fleet:
                         stats[method]['travel_min']+=free*delay
                         stats[method]['congestion_extra_min']+=free*(delay-1)
                         stats[method]['congestion_wait_ticks']+=truck['remaining']-1
+                        ps=pstats[method][truck['pair']]
+                        ps['travel']+=free*delay;ps['extra']+=free*(delay-1)
+                        ps['wait']+=truck['remaining']-1
                 for method in self.trucks:
                     arrival_series[method].append([tick, stats[method]['delivered']])
+                    for ps in pstats[method]:
+                        ps['series'].append([tick, ps['delivered']])
                 with self.lock:
                     self.snapshot={'tick':tick,'done':False,'events':events[:],
                         'blocked':sorted(blocked),'depot_nodes':self.depots,'zone_nodes':self.zones,
+                        'pairs':[list(p) for p in self.pairs],
                         'numpy_acceleration':np is not None,
                         'density':{m:{str(i):n for i,n in loads.items() if n>0} for m,loads in occupancy.items()},
                         'fleets':{m:{'trucks':[{'node':t['node'],'edge':t['edge'],
-                            'remaining':t['remaining'],'target':t['target'],
+                            'remaining':t['remaining'],'target':t['target'],'pair':t['pair'],
                             'arrival_tick':t['arrival_tick'],
                             'traversed':t['traversed'], 'route':(t['plan'] or [])[:18]}
                             for t in team], 'arrival_series':arrival_series[m][:],
+                            'pairs':[{'index':k,'start':self.pairs[k][0],'target':self.pairs[k][1],
+                                'vehicles':pair_total[k],'delivered':ps['delivered'],
+                                'completed_tick':ps['completed'],
+                                'median_arrival_tick':statistics.median(ps['arrivals']) if ps['arrivals'] and ps['delivered']==pair_total[k] else None,
+                                'congestion_wait_ticks':ps['wait'],
+                                'congestion_extra_min':round(ps['extra'],3),
+                                'travel_min':round(ps['travel'],3),
+                                'arrival_series':ps['series'][:]}
+                                for k,ps in enumerate(pstats[m])],
                             'metrics':{**stats[m],
                                 'unique_roads_used':len(used_edges[m]),
                                 'compute_ms':round(stats[m]['compute_ms'],3),

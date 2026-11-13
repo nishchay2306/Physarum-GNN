@@ -1,60 +1,47 @@
-# Physarum-GNN: Guwahati Relief Fleet Simulation
+# Physarum-GNN: Offline Guwahati Fleet Routing Simulation
 
-What happens when a road closes while relief vehicles are on their way? This offline demo lets you watch two route-planning methods respond on a simplified map of Guwahati. You choose a starting point, a destination, and the number of vehicles. Both fleets then face the same simulated traffic and road closures.
+An offline experiment that compares two routing policies, classic **Dijkstra** and a **Physarum-inspired GNN** policy, on a simulated fleet operating over an OSM-derived road network of Guwahati, India. Both policies face identical vehicles, road speeds, capacities, congestion math, and hazard events, so the comparison is like for like. Purple dashed connectors are synthetic simulation roads, never verified real streets.
 
-- **Dijkstra** chooses the shortest available route and finds a new one when a closure blocks it.
-- **Physarum-GNN** adjusts its route choices as simulated traffic changes. It combines a small graph neural network (GNN) with a routing method inspired by how slime mold forms networks.
-
-In the measured runs, **neither method wins every measure**. Physarum-GNN delivered the last vehicle sooner in the 50- and 1,000-vehicle examples, while Dijkstra used much less computation. At 1,000 vehicles, Dijkstra also had less added driving time from congestion. These results describe this simulation, not real emergency travel.
-
-## See the demo
-
-![Fleet dashboard showing selectable intersections on the Guwahati map and purple dashed simulated links](docs/images/fleet-map.png)
-
-Choose a start and destination, set the fleet size, and press **Dispatch both fleets**. Purple dashed links represent simulated connections added for this experiment.
-
-![Example run comparing 417 Physarum-GNN vehicles with 417 Dijkstra vehicles, including route maps and delivery statistics](docs/images/fleet-comparison.png)
-
-The report cards show where each fleet went and how many vehicles arrived. This screenshot is a **417-vehicle example run**. The tables below use separate, repeatable 50- and 1,000-vehicle runs.
-
-![Delivery timeline for a 417-vehicle example run, with Physarum-GNN and Dijkstra cumulative arrival lines](docs/images/delivery-timeline.png)
-
-Each line rises as vehicles reach their destinations. A higher line at the same point on the horizontal axis means more vehicles have arrived by that simulation step. The dashed vertical lines mark the middle arrival time for each fleet.
+> **How to interpret it:** Neither routing policy is guaranteed to win. Select paths and fleet size, then compare the live arrival curves, final median arrival tick, last-car tick, congestion and routing CPU for that particular simulation. Ticks are simulation steps, not wall-clock seconds or real travel minutes.
 
 ---
 
-## Results at a glance
+## Live fleet results
 
-### Fleet dashboard (repeatable runs with no display delay)
+The dashboard derives per-path and combined results from each run. The maximum fleet size is 2,500 vehicles **per policy**. Runs at that limit can take several minutes, and the tick cap may leave some vehicles en route; final median and last-car figures remain unavailable until all vehicles arrive. Previously recorded figures from the narrower map are intentionally omitted because they do not describe this expanded map.
 
-| Vehicles per fleet | Route planner | Delivered | Middle arrival step | Final arrival step | Extra driving time from congestion |
-| ---: | --- | ---: | ---: | ---: | ---: |
-| 50 | Dijkstra | 50 / 50 | 122.5 | 191 | 62.2 min |
-| 50 | Physarum-GNN | 50 / 50 | **114.5** | **187** | **34.1 min** |
-| 1,000 | Dijkstra | 1,000 / 1,000 | 511 | 847 | **1,205.8 min** |
-| 1,000 | Physarum-GNN | 1,000 / 1,000 | **473.5** | **808** | 3,361.9 min |
+### Single-vehicle CLI benchmark (Maligaon–Kamakhya route, simulated blockade `14255`)
 
-**How to read the table:** a *step*, called a *tick* in the dashboard, is not a real second or minute. *Middle arrival* is when the middle vehicle arrived. *Final arrival* is when every vehicle had arrived. *Extra driving time* adds up the estimated minutes caused by simulated congestion across all vehicles. The dashboard calls this **fleet BPR delay**. It does not include time spent waiting to enter a full road. Measured computation time varies by computer, and a 1,000-vehicle run may take minutes to finish.
+| Method | Valid after closure | Estimated drive | Rerouting latency |
+| --- | --- | ---: | ---: |
+| Fixed pre-disaster route | No | unavailable | 0 ms |
+| Dijkstra rerun | Yes | 5.310 min | 1.072 ms |
+| Physarum | Yes | 5.310 min | 5,467.157 ms |
+| Physarum-GNN | Yes | 5.310 min | 5,649.875 ms |
 
-The route choices depend on the map. In the default trip, closing each original route segment in turn produces 24 possible detours, 12 within 25% of the original estimated drive time. Without the simulated links, only three detours remain, and none is within 25%.
+**How to read these numbers**
+
+- Every method that can reroute finds the same 5.310-minute detour. Dijkstra gets there thousands of times faster.
+- The GNN did not improve route validity or drive time.
+- The results do not support a claim that conventional shortest-path rerouting is static or inferior.
+- Timings come from one run and vary by machine. The default seeded run is reproducible, but measured CPU time is not.
+- The short purple links are simulated for this graph experiment; they are not verified travel corridors.
 
 ---
 
 ## Quick start
 
-Open the [browser demo](https://nishchay2306.github.io/Physarum-GNN/) to try the fleet comparison without installing Python. The simulation runs on your device. It uses bundled map data and simulated disruptions, so it does not need a live traffic service.
+**[GitHub Pages demo](https://nishchay2306.github.io/Physarum-GNN/)** serves files from `docs/` on `main`. Publish this revision to the repository to make the updated interface live. It runs locally in the browser using a Web Worker and bundled map/model data. Choose 1–10 start/end paths, pick nodes on the map or in the selectors, enter up to 2,500 vehicles per policy, and dispatch both fleets. The map stays pale in either theme; the surrounding dashboard opens in black. The two full-width animated maps, combined arrival chart, and four-at-a-time path charts update as the run advances.
 
-To run the Python version locally, install **Python 3.10 or newer**, then open a terminal in this project folder and run:
+For the offline Python version, use **Python 3.10+**. No internet connection is needed.
 
 ```bash
 python app.py
 ```
 
-The app prints a local address and opens the dashboard in your browser. Keep the terminal open while using it. Press `Ctrl+C` to stop. The demo works without an internet connection.
+The app prints a fresh local address in the terminal. Open it in your browser and keep the terminal running. Press `Ctrl+C` to stop.
 
-The hosted version runs the same fleet rules in a browser worker. Its routing computation time reflects your browser and device, so compare those times only within the same run. The Python version also includes the separate road-closure experiment below.
-
-To run the separate command-line road-closure experiment:
+Optional: run the CLI benchmark instead.
 
 ```bash
 python main.py
@@ -66,23 +53,28 @@ python main.py
 
 ### The map
 
-The main map is a **1.5× wider OSM-derived Guwahati close-up** with 722 mapped nodes and 834 visible links. It includes 694 bundled OSM segments and 140 short, simulated joins, marked purple and dashed. The connected routable area has 495 selectable intersections and 643 links. The joins add alternative paths for the simulation; they are not verified roads.
+The road close-up now covers about **1.65× the original connected extract**, displaying 768 mapped intersections and 875 visible links. The connected routable area has 518 selectable intersections and 667 links. The 140 purple dashed short joins are synthetic simulation roads, not verified real streets. The animated Physarum and Dijkstra maps fill the available page width and appear one after the other beneath the selection map. All three road maps retain the original pale map background, light road lines, white intersection dots, and readable map labels in either theme. The dashboard opens in a black theme; the theme toggle switches the surrounding interface to light mode if desired.
 
 ### Running a comparison
 
-1. **Pick a start and destination** by clicking intersections on the map or by using the two node menus. These are the actual first depot and disaster zone.
-2. **Set the fleet size.** The default is **50 vehicles per fleet**. Enter a whole number from 1 to 1000 in the number box, or use the synchronized slider.
-3. Press **Dispatch both fleets**.
+1. **Choose how many start → end paths to simulate** (1 to 10) with the *Number of start → end paths* box. Each path gets its own row in the sidebar.
+2. **Set a start and an end for every path**, either from that row's two node menus or by clicking intersections on the map. Map clicks fill START 1, END 1, START 2, END 2 … in order; press **Pick on map** beside any slot to choose which one the next click sets. On the map, a filled pin is a start and a ringed pin is an end, with one colour per path. A start and end of the same path must differ and be connected by a directed route.
+3. **Set the fleet size.** The default is **50 vehicles per fleet**. Enter a whole number from 1 to 2500 in the number box, or use the synchronized slider. The fleet is the total per policy and must be at least the number of paths.
+4. Press **Dispatch both fleets**.
 
-The simulator derives a second reachable depot and zone nearby so the fleets have more than one depot-zone pair. Each policy gets the same number of vehicles, the same selected depot-zone pairs, and the same road speeds, capacities, and hazard events.
+Vehicles are assigned to paths in turn (vehicle 1 to path 1, vehicle 2 to path 2, and so on), so every path receives an equal share, give or take one vehicle. Each policy gets the same number of vehicles per path, the same selected paths, and the same road speeds, capacities, and hazard events. A micro-disruption is only accepted if every selected path still has a bypass.
 
-While the simulation runs you can watch live traffic, road closures, vehicle locations, and delivery counts, plus a separate route map and report card for each policy. The graph below compares their cumulative arrivals at each simulation tick; the colored dashed lines mark each median arrival tick. Median arrival tick and last-car tick appear only when every vehicle in that fleet has arrived; if the tick cap ends first, final times are unavailable and the live arrival curve still shows progress. Larger fleets take longer to finish and may hit the configured tick cap.
+> **About earlier fleet screenshots and numbers:** they used the older four-combination layout, so they are not directly comparable with the current selected-path dashboard. Calling `Fleet(count=...)` without `pairs=` still uses that legacy layout for code compatibility.
+
+The page opens with one path (the default Maligaon–Kamakhya route). Raising the path count fills new rows with deterministic, well-separated default paths, which you can change.
+
+While the simulation runs you can watch live traffic, road closures, vehicle locations, and delivery counts, plus a separate route map and report card for each policy. The first graph below compares cumulative arrivals of all vehicles at each simulation tick; the colored dashed lines mark each median arrival tick. Under it, **Per-path timelines** display four paths in a 2×2 desktop grid. Fewer than four paths leave blank slots; ten paths produce three grids of four, with two blank slots in the last grid. Each graph shows only vehicles assigned to that path, with its own median, last-car tick and BPR delay for both policies. Median arrival tick and last-car tick appear only when every vehicle in that fleet has arrived; if the tick cap ends first, final times are unavailable and the live arrival curve still shows progress. Larger fleets take longer to finish and may hit the configured tick cap.
 
 ### Report cards
 
 Each policy's card shows:
 
-- Fleet deliveries and the last arrival tick
+- Fleet deliveries and the last arrival tick (all paths combined; per-path figures are in the Per-path timelines section)
 - BPR added drive time in minutes, shown separately from aggregate congestion wait ticks
 - Aggregate congestion wait ticks
 - Median arrival tick and last-car tick, shown once every vehicle has arrived
@@ -100,8 +92,8 @@ Moving time and queued or waiting ticks are separate metrics. A simulation tick 
 
 ### Shared conditions for both policies
 
-- **Road closures.** Both policies see the same temporary closures each tick. A concurrent producer thread proposes seeded micro-disruptions from a pre-event corridor, independently of either policy's current route. A lock and condition coordinate it with the master tick loop.
-- **Closure rules.** Closures last eight ticks and are accepted only where depot-zone pairs still have a bypass.
+- **Road closures.** Both policies see the same temporary closures each tick. The Python app coordinates a concurrent producer thread with the master tick loop using a lock and condition. The hosted browser version runs the corresponding seeded hazard logic and simulation in a Web Worker.
+- **Closure rules.** Closures last eight ticks and are accepted only where every selected start→end path still has a bypass.
 - **Capacity.** Each road has a class-based capacity, and at most twice that number of vehicles may occupy it. Extra vehicles wait at the preceding intersection.
 - **Congestion model.** For each admitted vehicle, travel duration follows the BPR formula below. The resulting simulated delay is rounded up to ticks. Both policies use identical congestion math. The backend retains the sum of free-flow and BPR road time across vehicles; the dashboard shows median arrival tick and the fleet-wide BPR penalty instead of that confusing aggregate drive-time sum. Vehicles also queue at full roads, and queue time is reported as wait ticks rather than conflated with drive minutes.
 
@@ -126,18 +118,9 @@ Implementation notes:
 
 ---
 
-## Separate road-closure experiment
+## CLI benchmark
 
 `python main.py` blocks a simulated road on the original Maligaon–Kamakhya route and runs Dijkstra, warm-start Physarum, and Physarum-GNN on that same closure. It also runs the Jorabat and Panikhaiti scenarios.
-
-In one measured run with road segment `14255` closed, every method that could find a new route returned the same estimated 5.310-minute detour. Dijkstra computed it much faster. The GNN did not improve route validity or estimated drive time in this test. These timings vary by computer.
-
-| Method | Valid after closure | Estimated drive | Rerouting latency |
-| --- | --- | ---: | ---: |
-| Fixed route chosen before closure | No | unavailable | 0 ms |
-| Dijkstra rerun | Yes | 5.310 min | 1.072 ms |
-| Physarum | Yes | 5.310 min | 5,467.157 ms |
-| Physarum-GNN | Yes | 5.310 min | 5,649.875 ms |
 
 ### Outputs (in `output/`)
 
@@ -219,12 +202,13 @@ python scripts/build_tiles.py
 python main.py --train                      # retrain the GNN
 python -m unittest discover -s tests -v     # run tests
 python -m pip install numpy                 # optional: vectorized conductivity updates
-python -m scripts.build_pages_data          # refresh the bundled browser map and model
+python -m scripts.build_pages_data          # rebuild docs/map.json and docs/index.html
+node tests/test_pages.js                    # test hosted browser simulator
 ```
 
-GitHub Pages serves the static files in `docs/`. To preview that version locally, run `python -m http.server 8000 --directory docs` and open `http://localhost:8000/`. The browser simulation uses JavaScript and a Web Worker; it does not call the Python server. If you change `fleet.html`, carry the corresponding interface change into `docs/index.html`.
+GitHub Pages serves `docs/` from the `main` branch. The generator copies the current `fleet.html` into `docs/index.html`, adapts its API calls to the Web Worker, and rebuilds the bundled map and default paths. To preview locally, run `python -m http.server 8000 --directory docs` and open `http://localhost:8000/`. The hosted Web Worker uses JavaScript, so routing CPU times depend on the browser and device.
 
-The Python project uses the **standard library only**; NumPy is an optional accelerator. The original single-vehicle dynamic experiment is kept in `physrum/dynamic.py` for reference.
+The project uses the **Python standard library only**; NumPy is an optional accelerator. The original single-vehicle dynamic experiment is kept in `physrum/dynamic.py` for reference.
 
 ## Credits
 

@@ -214,29 +214,43 @@ function modelScores(graph, original, model) {
 
 class Fleet {
   constructor(data, options = {}) {
-    const { count = 50, start = data.default_start, target = data.default_end, seed = 2306, maxTicks = 1000 } = options;
-    if (!Number.isInteger(count) || count < 1 || count > 1000) throw new Error("Fleet size must be between 1 and 1000.");
+    const { count = 50, start = data.default_start, target = data.default_end,
+      seed = 2306, maxTicks = null, pairs = null } = options;
+    if (!Number.isInteger(count) || count < 1 || count > 2500) throw new Error("Fleet size must be between 1 and 2500.");
     this.graph = new RoadGraph(data);
     const graph = this.graph;
-    if (!(start in graph.nodes) || !(target in graph.nodes) || start === target) {
-      throw new Error("Select different connected road intersections for start and destination.");
+    if (pairs === null) {
+      if (!(start in graph.nodes) || !(target in graph.nodes) || start === target
+          || !graph.dijkstra(start, target)?.length) {
+        throw new Error("Select different connected road intersections for start and destination.");
+      }
+      const secondStart = nearby(graph, start, target, target);
+      const [x, y] = graph.nodes[target];
+      const choices = Object.keys(graph.nodes).sort((left, right) => {
+        const a = graph.nodes[left], b = graph.nodes[right];
+        return ((a[0] - x) ** 2 + (a[1] - y) ** 2) - ((b[0] - x) ** 2 + (b[1] - y) ** 2);
+      });
+      const secondTarget = choices.find(node => ![target, start, secondStart].includes(node)
+        && graph.dijkstra(start, node)?.length && graph.dijkstra(secondStart, node)?.length);
+      if (!secondTarget) throw new Error("No second reachable destination near the selected point.");
+      this.pairs = [[start, target], [secondStart, target], [start, secondTarget], [secondStart, secondTarget]];
+    } else {
+      if (!Array.isArray(pairs) || !pairs.length || pairs.length > (data.max_pairs || 10)) {
+        throw new Error(`Choose between 1 and ${data.max_pairs || 10} start/end paths.`);
+      }
+      if (count < pairs.length) throw new Error(`Fleet size (${count}) must be at least the number of paths (${pairs.length}).`);
+      this.pairs = pairs.map((pair, index) => {
+        if (!Array.isArray(pair) || pair.length !== 2) throw new Error(`Path ${index + 1}: select two different road intersections.`);
+        const [a, b] = pair.map(String);
+        if (!(a in graph.nodes) || !(b in graph.nodes) || a === b) throw new Error(`Path ${index + 1}: select two different road intersections.`);
+        if (!graph.dijkstra(a, b)?.length) throw new Error(`Path ${index + 1}: no directed route connects the selected intersections.`);
+        return [a, b];
+      });
     }
-    if (!graph.dijkstra(start, target)?.length) throw new Error("No directed route connects the selected intersections.");
-    const secondStart = nearby(graph, start, target, target);
-    const [x, y] = graph.nodes[target];
-    const choices = Object.keys(graph.nodes).sort((left, right) => {
-      const a = graph.nodes[left];
-      const b = graph.nodes[right];
-      return ((a[0] - x) ** 2 + (a[1] - y) ** 2) - ((b[0] - x) ** 2 + (b[1] - y) ** 2);
-    });
-    const secondTarget = choices.find(node => ![target, start, secondStart].includes(node)
-      && graph.dijkstra(start, node)?.length && graph.dijkstra(secondStart, node)?.length);
-    if (!secondTarget) throw new Error("No second reachable destination near the selected point.");
-
-    this.depots = [start, secondStart];
-    this.zones = [target, secondTarget];
+    this.depots = this.pairs.map(pair => pair[0]);
+    this.zones = this.pairs.map(pair => pair[1]);
     this.count = count;
-    this.maxTicks = maxTicks;
+    this.maxTicks = maxTicks ?? Math.max(1000, Math.ceil(count * 1.3));
     this.tick = 0;
     this.startedAt = performance.now();
     this.random = new PythonRandom(seed + 101);
@@ -246,18 +260,16 @@ class Fleet {
     this.edgeIds = graph.edges.map(edge => edge.id);
     this.initial = [];
     this.trucks = { dijkstra: [], physarum: [] };
-    const initialRoutes = new Map();
-    for (const depot of this.depots) {
-      for (const zone of this.zones) initialRoutes.set(`${depot}|${zone}`, graph.dijkstra(depot, zone));
-    }
+    const initialRoutes = new Map(this.pairs.map(([depot, zone]) =>
+      [`${depot}|${zone}`, graph.dijkstra(depot, zone)]));
     for (const method of ["dijkstra", "physarum"]) {
       for (let i = 0; i < count; i++) {
-        const depot = this.depots[i % 2];
-        const zone = this.zones[Math.floor(i / 2) % 2];
+        const pair = i % this.pairs.length;
+        const [depot, zone] = this.pairs[pair];
         const route = initialRoutes.get(`${depot}|${zone}`);
         if (!route?.length) throw new Error("The bundled road extract cannot connect fleet depots and zones.");
         if (method === "dijkstra") this.initial.push(route);
-        this.trucks[method].push({ node: depot, target: zone, plan: route,
+        this.trucks[method].push({ node: depot, target: zone, pair, plan: route,
           edge: null, remaining: 0, wait: 0, arrived: false, arrival_tick: null, traversed: [] });
       }
     }
@@ -274,6 +286,10 @@ class Fleet {
     this.arrivalTicks = { dijkstra: [], physarum: [] };
     this.arrivalSeries = { dijkstra: [[0, 0]], physarum: [[0, 0]] };
     this.occupancy = { dijkstra: new Map(), physarum: new Map() };
+    this.pairTotals = this.pairs.map((_, k) => Math.floor((count - 1 - k) / this.pairs.length) + 1);
+    this.pairStats = Object.fromEntries(["dijkstra", "physarum"].map(method => [method,
+      this.pairs.map(() => ({ delivered: 0, wait: 0, extra: 0, travel: 0,
+        completed: null, arrivals: [], series: [[0, 0]] }))]));
     this.blocked = new Set();
   }
 
@@ -290,7 +306,7 @@ class Fleet {
     for (const id of proposed) {
       if (this.closedUntil.has(id)) continue;
       const candidate = new Set([...this.closedUntil.keys(), id]);
-      if (this.depots.every(depot => this.zones.every(zone => graph.dijkstra(depot, zone, candidate)?.length))) {
+      if (this.pairs.every(([depot, zone]) => graph.dijkstra(depot, zone, candidate)?.length)) {
         this.closedUntil.set(id, tick + 8);
         this.events.push({ tick, edge: id, until: tick + 8, kind: "simulated micro-disruption" });
         break;
@@ -329,6 +345,10 @@ class Fleet {
             stats.delivered++;
             truck.arrival_tick = tick;
             this.arrivalTicks[method].push(tick);
+            const pairStats = this.pairStats[method][truck.pair];
+            pairStats.delivered++;
+            pairStats.arrivals.push(tick);
+            if (pairStats.delivered === this.pairTotals[truck.pair]) pairStats.completed = tick;
             if (stats.delivered === this.count) stats.completed_tick = tick;
             continue;
           }
@@ -364,6 +384,7 @@ class Fleet {
         if (occupancy[method].get(id) >= 2 * this.capacity.get(id)) {
           truck.wait++;
           stats.congestion_wait_ticks++;
+          this.pairStats[method][truck.pair].wait++;
           continue;
         }
         const flow = occupancy[method].get(id) + 1;
@@ -377,8 +398,13 @@ class Fleet {
         stats.travel_min += free * delay;
         stats.congestion_extra_min += free * (delay - 1);
         stats.congestion_wait_ticks += truck.remaining - 1;
+        const pairStats = this.pairStats[method][truck.pair];
+        pairStats.travel += free * delay;
+        pairStats.extra += free * (delay - 1);
+        pairStats.wait += truck.remaining - 1;
       }
       this.arrivalSeries[method].push([tick, stats.delivered]);
+      for (const pairStats of this.pairStats[method]) pairStats.series.push([tick, pairStats.delivered]);
     }
     this.occupancy = occupancy;
     this.done = tick >= this.maxTicks || Object.values(this.stats).every(stats => stats.delivered === this.count);
@@ -394,10 +420,23 @@ class Fleet {
       fleets[method] = {
         trucks: this.trucks[method].map(truck => ({
           node: truck.node, edge: truck.edge, remaining: truck.remaining,
-          target: truck.target, arrival_tick: truck.arrival_tick,
+          target: truck.target, pair: truck.pair, arrival_tick: truck.arrival_tick,
           traversed: truck.traversed, route: (truck.plan || []).slice(0, 18)
         })),
         arrival_series: this.arrivalSeries[method],
+        pairs: this.pairs.map(([start, target], index) => {
+          const pairStats = this.pairStats[method][index];
+          const arrivals = pairStats.delivered === this.pairTotals[index]
+            ? [...pairStats.arrivals].sort((a, b) => a - b) : null;
+          return { index, start, target, vehicles: this.pairTotals[index],
+            delivered: pairStats.delivered, completed_tick: pairStats.completed,
+            median_arrival_tick: arrivals ? (arrivals[(arrivals.length - 1) >> 1]
+              + arrivals[arrivals.length >> 1]) / 2 : null,
+            congestion_wait_ticks: pairStats.wait,
+            congestion_extra_min: Math.round(pairStats.extra * 1000) / 1000,
+            travel_min: Math.round(pairStats.travel * 1000) / 1000,
+            arrival_series: pairStats.series };
+        }),
         metrics: { ...stats, unique_roads_used: this.usedEdges[method].size,
           compute_ms: Math.round(stats.compute_ms * 1000) / 1000,
           median_arrival_tick: middle,
@@ -407,7 +446,7 @@ class Fleet {
     }
     return {
       tick: this.tick, done: this.done, events: this.events, blocked: [...this.blocked].sort((a, b) => a - b),
-      depot_nodes: this.depots, zone_nodes: this.zones, numpy_acceleration: false,
+      depot_nodes: this.depots, zone_nodes: this.zones, pairs: this.pairs, numpy_acceleration: false,
       density: Object.fromEntries(["dijkstra", "physarum"].map(method => [method,
         Object.fromEntries([...this.occupancy[method]].filter(([, count]) => count > 0))])),
       fleets, elapsed_wall_s: Math.round((performance.now() - this.startedAt) / 10) / 100
